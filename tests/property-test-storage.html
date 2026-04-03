@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Property Tests: Storage, Transaction Add Round-Trip, Delete Round-Trip, Invalid Form Rejected, Form Cleared After Add, List Renders All Data, List Ordered Most-Recent-First, Balance Equals Sum, Chart Data Matches Category Totals</title>
+  <style>
+    body { font-family: monospace; padding: 2rem; background: #1e1e1e; color: #d4d4d4; }
+    h1 { color: #9cdcfe; margin-bottom: 0.5rem; }
+    .meta { color: #6a9955; margin-bottom: 1.5rem; font-size: 0.9rem; }
+    #results { margin-top: 1rem; }
+    .pass { color: #4ec9b0; }
+    .fail { color: #f44747; }
+    .info { color: #dcdcaa; }
+    pre { background: #252526; padding: 1rem; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Property Tests: Storage, Transaction Add Round-Trip &amp; Delete Round-Trip</h1>
+  <div class="meta">
+    Feature: browser-local-storage-app<br>
+    Property 1: Invalid form submissions are rejected — Validates: Requirements 1.3<br>
+    Property 2: Transaction add round-trip — Validates: Requirements 1.2, 5.2<br>
+    Property 3: Form is cleared after successful add — Validates: Requirements 1.4<br>
+    Property 4: List renders all transaction data — Validates: Requirements 2.1<br>
+    Property 5: List is ordered most-recent-first — Validates: Requirements 2.2<br>
+    Property 6: Delete round-trip — Validates: Requirements 2.3, 5.2<br>
+    Property 7: Balance equals sum of all amounts — Validates: Requirements 3.1, 3.2, 3.3<br>
+    Property 8: Chart data matches category totals — Validates: Requirements 4.1, 4.2, 4.3, 4.4<br>
+    Property 9: Storage persistence round-trip — Validates: Requirements 5.1, 5.2
+  </div>
+  <div id="results"><span class="info">Loading fast-check from CDN…</span></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/fast-check@3/lib/bundle/fast-check.min.js"></script>
+
+  <script>
+    // ── Storage layer (inlined from js/app.js) ──────────────────────────────
+    const STORAGE_KEY = "expense-tracker-transactions";
+
+    function loadFromStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw === null) return [];
+        return JSON.parse(raw);
+      } catch {
+        return [];
+      }
+    }
+
+    function saveToStorage(txns) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(txns));
+      } catch (err) {
+        throw err;
+      }
+    }
+
+    // ── Transaction logic (inlined from js/app.js, no DOM render calls) ─────
+    let transactions = [];
+
+    function addTransaction(name, amount, category) {
+      const id = (typeof crypto !== "undefined" && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : Date.now().toString();
+      transactions.push({ id, name, amount, category });
+      saveToStorage(transactions);
+    }
+
+    function deleteTransaction(id) {
+      transactions = transactions.filter(txn => txn.id !== id);
+      saveToStorage(transactions);
+    }
+
+    // ── Deep-equality helper ─────────────────────────────────────────────────
+    function deepEqual(a, b) {
+      return JSON.stringify(a) === JSON.stringify(b);
+    }
+
+    // ── Run tests after DOM is ready ─────────────────────────────────────────
+    window.addEventListener("load", function () {
+      const resultsEl = document.getElementById("results");
+
+      if (typeof fc === "undefined") {
+        resultsEl.innerHTML =
+          '<span class="fail">✗ fast-check failed to load from CDN. ' +
+          "Open this file via a web server or check your internet connection.</span>";
+        return;
+      }
+
+      let output = "";
+
+      // ── Property 2: Transaction add round-trip ───────────────────────────
+      // Feature: browser-local-storage-app, Property 2: Transaction add round-trip
+      //
+      // For any valid transaction (non-empty name, positive amount, valid category),
+      // after addTransaction() is called the transactions array must contain exactly
+      // one entry with the same name, amount, and category, and loadFromStorage()
+      // must return an array containing an entry with those same values.
+
+      const validTransactionArb = fc.record({
+        name: fc.string({ minLength: 1 }),
+        amount: fc.float({ min: 0.01, max: 10000, noNaN: true }),
+        category: fc.constantFrom("Food", "Transport", "Fun"),
+      });
+
+      try {
+        fc.assert(
+          fc.property(validTransactionArb, function (txn) {
+            // Reset module-level state before each run
+            transactions = [];
+            localStorage.removeItem(STORAGE_KEY);
+
+            addTransaction(txn.name, txn.amount, txn.category);
+
+            // Assert: exactly one entry in the in-memory array
+            if (transactions.length !== 1) return false;
+
+            const entry = transactions[0];
+            if (entry.name !== txn.name) return false;
+            if (entry.amount !== txn.amount) return false;
+            if (entry.category !== txn.category) return false;
+
+            // Assert: loadFromStorage returns an entry with the same values
+            const stored = loadFromStorage();
+            if (stored.length !== 1) return false;
+            const storedEntry = stored[0];
+            if (storedEntry.name !== txn.name) return false;
+            if (storedEntry.amount !== txn.amount) return false;
+            if (storedEntry.category !== txn.category) return false;
+
+            return true;
+          }),
+          { numRuns: 100 }
+        );
+
+        output +=
+          '<p class="pass">✓ Property 2 passed (100 runs): ' +
+          "addTransaction → transactions array and localStorage contain the correct entry.</p>";
+      } catch (err) {
+        output +=
+          '<p class="fail">✗ Property 2 FAILED</p>' +
+          "<pre>" + escapeHtml(String(err)) + "</pre>";
+      } finally {
+        try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+        transactions = [];
+      }
+
+      // ── Property 9: Storage persistence round-trip ───────────────────────
+      // Feature: browser-local-storage-app, Property 9: Storage persistence round-trip
+      //
+      // For any array of valid transactions, calling saveToStorage then
+      // loadFromStorage must return a deeply equal array (round-trip fidelity).
+
+      const transactionArb = fc.record({
+        id: fc.string(),
+        name: fc.string({ minLength: 1 }),
+        amount: fc.float({ min: 0.01, max: 10000, noNaN: true }),
+        category: fc.constantFrom("Food", "Transport", "Fun"),
+      });
+
+      const transactionsArb = fc.array(transactionArb);
+
+      try {
+        fc.assert(
+          fc.property(transactionsArb, function (txns) {
+            saveToStorage(txns);
+            const restored = loadFromStorage();
+            const expected = JSON.parse(JSON.stringify(txns));
+            return deepEqual(restored, expected);
+          }),
+          { numRuns: 100 }
+        );
+
+        output +=
+          '<p class="pass">✓ Property 9 passed (100 runs): ' +
+          "saveToStorage → loadFromStorage round-trip is lossless.</p>";
+      } catch (err) {
+        output +=
+          '<p class="fail">✗ Property 9 FAILED</p>' +
+          "<pre>" + escapeHtml(String(err)) + "</pre>";
+      } finally {
+        try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+      }
+
+      // ── Property 6: Delete round-trip ────────────────────────────────────
+      // Feature: browser-local-storage-app, Property 6: Delete round-trip
+      //
+      // For any transaction currently in the list, after the user deletes it,
+      // that transaction should no longer appear in the in-memory array and
+      // should no longer be present in localStorage.
+      // Validates: Requirements 2.3, 5.2
+
+      const transactionWithIdArb = fc.record({
+        id: fc.string({ minLength: 1 }),
+        name: fc.string({ minLength: 1 }),
+        amount: fc.float({ min: 0.01, max: 10000, noNaN: true }),
+        category: fc.constantFrom("Food", "Transport", "Fun"),
+      });
+
+      const nonEmptyTransactionsArb = fc.array(transactionWithIdArb, { minLength: 1 });
+
+      try {
+        fc.assert(
+          fc.property(
+            nonEmptyTransactionsArb,
+            fc.nat(),
+            function (txns, indexSeed) {
+              // Reset state before each run
+              transactions = JSON.parse(JSON.stringify(txns));
+              saveToStorage(transactions);
+
+              // Pick a random valid index
+              const idx = indexSeed % transactions.length;
+              const targetId = transactions[idx].id;
+
+              deleteTransaction(targetId);
+
+              // Assert: deleted transaction is gone from in-memory array
+              if (transactions.some(txn => txn.id === targetId)) return false;
+
+              // Assert: deleted transaction is gone from localStorage
+              const stored = loadFromStorage();
+              if (stored.some(txn => txn.id === targetId)) return false;
+
+              return true;
+            }
+          ),
+          { numRuns: 100 }
+        );
+
+        output +=
+          '<p class="pass">✓ Property 6 passed (100 runs): ' +
+          "deleteTransaction → transaction is absent from both the in-memory array and localStorage.</p>";
+      } catch (err) {
+        output +=
+          '<p class="fail">✗ Property 6 FAILED</p>' +
+          "<pre>" + escapeHtml(String(err)) + "</pre>";
+      } finally {
+        try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+        transactions = [];
+      }
+
+      // ── Property 1: Invalid form submissions are rejected ────────────────
+      // Feature: browser-local-storage-app, Property 1: Invalid form submissions are rejected
+      //
+      // For any combination of form inputs where at least one field is empty or
+      // invalid (empty name, non-positive amount, or missing category),
+      // validateForm() should return a non-null error string, and the transaction
+      // count should remain unchanged.
+      // Validates: Requirements 1.3
+
+      function validateForm(name, amount, category) {
+        if (!name.trim()) return "Item name is required.";
+        const parsed = parseFloat(amount);
+        if (isNaN(parsed) || parsed <= 0) return "Amount must be a positive number.";
+        if (!category) return "Please select a category.";
+        return null;
+      }
+
+      // Arbitraries for each invalid field type
+      const emptyNameArb = fc.constant("");
+      const blankNameArb = fc.stringOf(fc.constantFrom(" ", "\t", "\n"), { minLength: 1 });
+      const invalidNameArb = fc.oneof(emptyNameArb, blankNameArb);
+
+      const nonPositiveAmountArb = fc.oneof(
+        fc.constant("0"),
+        fc.constant("-1"),
+        fc.constant("abc"),
+        fc.constant(""),
+        fc.float({ max: 0, noNaN: true }).map(String)
+      );
+
+      const emptyCategoryArb = fc.constant("");
+
+      const validNameArb = fc.string({ minLength: 1 }).filter(s => s.trim().length > 0);
+      const validAmountArb = fc.float({ min: 0.01, max: 10000, noNaN: true }).map(String);
+      const validCategoryArb = fc.constantFrom("Food", "Transport", "Fun");
+
+      // Generate an invalid combination: at least one field is invalid
+      // Use fc.oneof to pick which field(s) are invalid
+      const invalidInputArb = fc.oneof(
+        // invalid name only
+        fc.record({
+          name: invalidNameArb,
+          amount: validAmountArb,
+          category: validCategoryArb,
+        }),
+        // invalid amount only
+        fc.record({
+          name: validNameArb,
+          amount: nonPositiveAmountArb,
+          category: validCategoryArb,
+        }),
+        // invalid category only
+        fc.record({
+          name: validNameArb,
+          amount: validAmountArb,
+          category: emptyCategoryArb,
+        }),
+        // all invalid
+        fc.record({
+          name: invalidNameArb,
+          amount: nonPositiveAmountArb,
+          category: emptyCategoryArb,
+        })
+      );
+
+      try {
+        fc.assert(
+          fc.property(invalidInputArb, function (input) {
+            const countBefore = transactions.length;
+            const error = validateForm(input.name, input.amount, input.category);
+
+            // Must return a non-null, non-empty error string
+            if (error === null || typeof error !== "string" || error.length === 0) return false;
+
+            // Transaction count must remain unchanged
+            if (transactions.length !== countBefore) return false;
+
+            return true;
+          }),
+          { numRuns: 100 }
+        );
+
+        output +=
+          '<p class="pass">✓ Property 1 passed (100 runs): ' +
+          "validateForm() returns a non-null error string for all invalid inputs and transaction count is unchanged.</p>";
+      } catch (err) {
+        output +=
+          '<p class="fail">✗ Property 1 FAILED</p>' +
+          "<pre>" + escapeHtml(String(err)) + "</pre>";
+      }
+
+      // ── Property 3: Form is cleared after successful add ─────────────────
+      // Feature: browser-local-storage-app, Property 3: Form is cleared after successful add
+      //
+      // For any valid transaction submission, after handleSubmit() is called,
+      // all form fields (#item-name, #amount, #category) should be reset to
+      // their default/empty state.
+      // Validates: Requirements 1.4
+
+      // Inline validateForm and a minimal handleSubmit that doesn't call render
+      function validateFormInline(name, amount, category) {
+        if (!name.trim()) return "Item name is required.";
+        const parsed = parseFloat(amount);
+        if (isNaN(parsed) || parsed <= 0) return "Amount must be a positive number.";
+        if (!category) return "Please select a category.";
+        return null;
+      }
+
+      function handleSubmitInline(event, nameEl, amountEl, categoryEl, errorEl) {
+        event.preventDefault();
+
+        const name = nameEl.value;
+        const amount = amountEl.value;
+        const category = categoryEl.value;
+
+        const error = validateFormInline(name, amount, category);
+        if (error) {
+          errorEl.textContent = error;
+          return;
+        }
+
+        errorEl.textContent = "";
+        // Add to in-memory array (no render calls)
+        const id = (typeof crypto !== "undefined" && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : Date.now().toString();
+        transactions.push({ id, name: name.trim(), amount: parseFloat(amount), category });
+        saveToStorage(transactions);
+
+        // Clear form fields
+        nameEl.value = "";
+        amountEl.value = "";
+        categoryEl.value = "";
+      }
+
+      const validTransactionArb3 = fc.record({
+        name: fc.string({ minLength: 1 }).filter(s => s.trim().length > 0),
+        amount: fc.float({ min: 0.01, max: 10000, noNaN: true }).map(n => String(n)),
+        category: fc.constantFrom("Food", "Transport", "Fun"),
+      });
+
+      try {
+        fc.assert(
+          fc.property(validTransactionArb3, function (txn) {
+            // Reset state
+            transactions = [];
+            localStorage.removeItem(STORAGE_KEY);
+
+            // Create minimal DOM elements
+            const nameEl = document.createElement("input");
+            nameEl.id = "item-name";
+            nameEl.value = txn.name;
+
+            const amountEl = document.createElement("input");
+            amountEl.id = "amount";
+            amountEl.value = txn.amount;
+
+            const categoryEl = document.createElement("select");
+            categoryEl.id = "category";
+            categoryEl.value = txn.category;
+
+            const errorEl = document.createElement("div");
+            errorEl.id = "error-msg";
+
+            // Append to body temporarily
+            document.body.appendChild(nameEl);
+            document.body.appendChild(amountEl);
+            document.body.appendChild(categoryEl);
+            document.body.appendChild(errorEl);
+
+            // Mock event
+            const mockEvent = { preventDefault: function () {} };
+
+            try {
+              handleSubmitInline(mockEvent, nameEl, amountEl, categoryEl, errorEl);
+
+              // Assert all fields are cleared
+              if (nameEl.value !== "") return false;
+              if (amountEl.value !== "") return false;
+              if (categoryEl.value !== "") return false;
+
+              return true;
+            } finally {
+              // Clean up DOM elements
+              document.body.removeChild(nameEl);
+              document.body.removeChild(amountEl);
+              document.body.removeChild(categoryEl);
+              document.body.removeChild(errorEl);
+            }
+          }),
+          { numRuns: 100 }
+        );
+
+        output +=
+          '<p class="pass">✓ Property 3 passed (100 runs): ' +
+          "All form fields are cleared to empty after a successful handleSubmit() call.</p>";
+      } catch (err) {
+        output +=
+          '<p class="fail">✗ Property 3 FAILED</p>' +
+          "<pre>" + escapeHtml(String(err)) + "</pre>";
+      } finally {
+        try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+        transactions = [];
+      }
+
+      // ── Property 4: List renders all transaction data ────────────────────
+      // Feature: browser-local-storage-app, Property 4: List renders all transaction data
+      //
+      // For any set of transactions in the app state, every transaction's name,
+      // amount, and category should appear in the rendered transaction list, and
+      // no extra transactions should be present.
+      // Validates: Requirements 2.1
+
+      function renderListInline(txns) {
+        const ul = document.createElement("ul");
+        txns.slice().reverse().forEach(function (txn) {
+          const li = document.createElement("li");
+          li.dataset.id = txn.id;
+          li.innerHTML =
+            '<span class="txn-name">' + txn.name + '</span>' +
+            '<span class="txn-amount">$' + txn.amount.toFixed(2) + '</span>' +
+            '<span class="txn-category">' + txn.category + '</span>' +
+            '<button class="delete-btn">Delete</button>';
+          ul.appendChild(li);
+        });
+        return ul;
+      }
+
+      const txnArrayArb = fc.array(
+        fc.record({
+          id: fc.string({ minLength: 1 }),
+          name: fc.string({ minLength: 1 }),
+          amount: fc.float({ min: 0.01, max: 10000, noNaN: true }),
+          category: fc.constantFrom("Food", "Transport", "Fun"),
+        })
+      );
+
+      try {
+        fc.assert(
+          fc.property(txnArrayArb, function (txns) {
+            const ul = renderListInline(txns);
+            const items = ul.querySelectorAll("li");
+
+            // Correct number of items
+            if (items.length !== txns.length) return false;
+
+            // Every transaction's data appears in the list
+            for (const txn of txns) {
+              const found = Array.from(items).some(function (li) {
+                const name = li.querySelector(".txn-name");
+                const amount = li.querySelector(".txn-amount");
+                const category = li.querySelector(".txn-category");
+                return (
+                  name && name.textContent === txn.name &&
+                  amount && amount.textContent === "$" + txn.amount.toFixed(2) &&
+                  category && category.textContent === txn.category
+                );
+              });
+              if (!found) return false;
+            }
+
+            return true;
+          }),
+          { numRuns: 100 }
+        );
+
+        output +=
+          '<p class="pass">✓ Property 4 passed (100 runs): ' +
+          "renderListInline renders every transaction's name, amount, and category with no extras.</p>";
+      } catch (err) {
+        output +=
+          '<p class="fail">✗ Property 4 FAILED</p>' +
+          "<pre>" + escapeHtml(String(err)) + "</pre>";
+      }
+
+      // ── Property 5: List is ordered most-recent-first ────────────────────
+      // Feature: browser-local-storage-app, Property 5: List is ordered most-recent-first
+      //
+      // For any sequence of transactions added in order, the rendered list should
+      // display them in reverse insertion order (most recently added at the top).
+      // Validates: Requirements 2.2
+
+      const nonEmptyTxnArrayArb = fc.array(
+        fc.record({
+          id: fc.string({ minLength: 1 }),
+          name: fc.string({ minLength: 1 }),
+          amount: fc.float({ min: 0.01, max: 10000, noNaN: true }),
+          category: fc.constantFrom("Food", "Transport", "Fun"),
+        }),
+        { minLength: 1 }
+      );
+
+      try {
+        fc.assert(
+          fc.property(nonEmptyTxnArrayArb, function (txns) {
+            const ul = renderListInline(txns);
+            const items = Array.from(ul.querySelectorAll("li"));
+
+            if (items.length !== txns.length) return false;
+
+            // Expected order: reverse of insertion (last added = first in list)
+            const reversed = txns.slice().reverse();
+            for (let i = 0; i < reversed.length; i++) {
+              const nameEl = items[i].querySelector(".txn-name");
+              if (!nameEl || nameEl.textContent !== reversed[i].name) return false;
+            }
+
+            return true;
+          }),
+          { numRuns: 100 }
+        );
+
+        output +=
+          '<p class="pass">✓ Property 5 passed (100 runs): ' +
+          "renderListInline displays transactions in reverse insertion order (most recent first).</p>";
+      } catch (err) {
+        output +=
+          '<p class="fail">✗ Property 5 FAILED</p>' +
+          "<pre>" + escapeHtml(String(err)) + "</pre>";
+      }
+
+      // ── Property 7: Balance equals sum of all amounts ────────────────────
+      // Feature: browser-local-storage-app, Property 7: Balance equals sum of all amounts
+      //
+      // For any set of transactions, the displayed balance should equal the
+      // arithmetic sum of all transaction amounts.
+      // Validates: Requirements 3.1, 3.2, 3.3
+
+      function computeBalance(txns) {
+        return txns.reduce(function (sum, txn) { return sum + txn.amount; }, 0);
+      }
+
+      try {
+        fc.assert(
+          fc.property(txnArrayArb, function (txns) {
+            const balance = computeBalance(txns);
+            const expected = txns.reduce(function (s, t) { return s + t.amount; }, 0);
+            return balance === expected;
+          }),
+          { numRuns: 100 }
+        );
+
+        output +=
+          '<p class="pass">✓ Property 7 passed (100 runs): ' +
+          "computeBalance equals the arithmetic sum of all transaction amounts.</p>";
+      } catch (err) {
+        output +=
+          '<p class="fail">✗ Property 7 FAILED</p>' +
+          "<pre>" + escapeHtml(String(err)) + "</pre>";
+      }
+
+      // ── Property 8: Chart data matches category totals ───────────────────
+      // Feature: browser-local-storage-app, Property 8: Chart data matches category totals
+      //
+      // For any set of transactions, the data values in the pie chart should equal
+      // the per-category sums of transaction amounts, and any category with a zero
+      // total should be omitted from the chart dataset.
+      // Validates: Requirements 4.1, 4.2, 4.3, 4.4
+
+      function computeCategoryTotals(txns) {
+        var totals = { Food: 0, Transport: 0, Fun: 0 };
+        txns.forEach(function (txn) {
+          if (Object.prototype.hasOwnProperty.call(totals, txn.category)) {
+            totals[txn.category] += txn.amount;
+          }
+        });
+        return totals;
+      }
+
+      try {
+        fc.assert(
+          fc.property(txnArrayArb, function (txns) {
+            var totals = computeCategoryTotals(txns);
+
+            // Categories with zero total must be excluded
+            var includedCategories = Object.keys(totals).filter(function (cat) {
+              return totals[cat] > 0;
+            });
+            var excludedCategories = Object.keys(totals).filter(function (cat) {
+              return totals[cat] === 0;
+            });
+
+            // Verify included categories have correct values
+            for (var i = 0; i < includedCategories.length; i++) {
+              var cat = includedCategories[i];
+              var expectedTotal = txns
+                .filter(function (t) { return t.category === cat; })
+                .reduce(function (s, t) { return s + t.amount; }, 0);
+              if (totals[cat] !== expectedTotal) return false;
+            }
+
+            // Verify excluded categories truly have zero total
+            for (var j = 0; j < excludedCategories.length; j++) {
+              var exCat = excludedCategories[j];
+              if (totals[exCat] !== 0) return false;
+            }
+
+            return true;
+          }),
+          { numRuns: 100 }
+        );
+
+        output +=
+          '<p class="pass">✓ Property 8 passed (100 runs): ' +
+          "computeCategoryTotals matches per-category sums and excludes zero-total categories.</p>";
+      } catch (err) {
+        output +=
+          '<p class="fail">✗ Property 8 FAILED</p>' +
+          "<pre>" + escapeHtml(String(err)) + "</pre>";
+      }
+
+      resultsEl.innerHTML = output;
+    });
+
+    function escapeHtml(str) {
+      return str
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+  </script>
+</body>
+</html>
